@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Detector de Mascarillas</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"/>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <div class="brand-dot">M</div>
+    <span class="brand-name">Detector de Mascarillas</span>
+  </div>
+  <div class="status-pill" id="modelPill">cargando…</div>
+</header>
+
+<!-- ── Detector ── -->
+<div class="card">
+  <div class="card-title">Analizar imagen</div>
+
+  <div id="dropZone">
+    <div class="drop-icon">🖼</div>
+    <div class="drop-title">Arrastra una foto aquí</div>
+    <div class="drop-sub">o haz clic para seleccionar · también Ctrl+V</div>
+    <input type="file" id="fileInput" accept="image/*" hidden/>
+  </div>
+
+  <div id="previewWrap">
+    <img id="previewImg" alt="Vista previa"/>
+    <button class="btn-remove" id="removeBtn">✕</button>
+  </div>
+
+  <button class="btn-scan" id="scanBtn" disabled>Detectar mascarilla</button>
+
+  <div id="spinner">
+    <div class="spin"></div>
+    Analizando…
+  </div>
+
+  <div id="resultBox">
+    <div class="verdict" id="verdict">
+      <span class="verdict-emoji" id="verdictEmoji"></span>
+      <span id="verdictText"></span>
+    </div>
+    <div class="bars">
+      <div class="bar-row">
+        <span class="bar-label">Con mascarilla</span>
+        <div class="bar-track"><div class="bar-fill fill-green" id="barCon"></div></div>
+        <span class="bar-pct" id="pctCon">—</span>
+      </div>
+      <div class="bar-row">
+        <span class="bar-label">Sin mascarilla</span>
+        <div class="bar-track"><div class="bar-fill fill-red" id="barSin"></div></div>
+        <span class="bar-pct" id="pctSin">—</span>
+      </div>
+    </div>
+    <div class="meta-row">
+      <span class="meta-chip" id="metaFace"></span>
+      <span class="meta-chip" id="metaConf"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ── Entrenar ── -->
+<div class="card">
+  <div class="card-title">Entrenar / re-entrenar modelo</div>
+  <p style="font-size:13px;color:var(--sub);margin-bottom:16px;line-height:1.6">
+    Sube imágenes cuyo nombre contenga <code style="font-family:var(--mono);background:var(--bg);padding:1px 5px;border-radius:4px">con</code>
+    o <code style="font-family:var(--mono);background:var(--bg);padding:1px 5px;border-radius:4px">sin</code>.
+    El modelo se entrenará con MobileNetV2 y quedará guardado en <code style="font-family:var(--mono);background:var(--bg);padding:1px 5px;border-radius:4px">model/</code>.
+  </p>
+
+  <div style="display:flex;gap:10px;flex-wrap:wrap">
+    <button class="small-btn" id="pickTrainBtn">📂 Seleccionar imágenes</button>
+    <button class="small-btn" id="driveBtn">☁ Descargar dataset de Drive y entrenar</button>
+    <input type="file" id="trainInput" accept="image/*" multiple hidden/>
+  </div>
+
+  <div id="trainFiles"></div>
+
+  <button class="small-btn" id="trainBtn" disabled style="margin-top:4px;width:100%;justify-content:center;background:var(--accent);color:#fff;border-color:var(--accent)">
+    ▶ Entrenar modelo
+  </button>
+
+  <div id="trainMsg"></div>
+</div>
+
+<footer>
+  MobileNetV2 · OpenCV Haar Cascade · Flask · Python<br/>
+  http://localhost:5000
+</footer>
+
+<script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
