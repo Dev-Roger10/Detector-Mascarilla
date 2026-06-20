@@ -1,24 +1,23 @@
-import os, io, urllib.request, base64
+import os, io, urllib.request
 import numpy as np
 import cv2
 from PIL import Image
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
 
-# ── TensorFlow / Keras ────────────────────────────────────────────────────
 try:
-    from tensorflow import keras
-    from tensorflow.keras import layers
-    from tensorflow.keras.applications import MobileNetV2
-    from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+    import torch
+    import torch.nn as nn
+    import torchvision.models as tv_models
+    import torchvision.transforms as transforms
     TF_OK = True
 except ImportError:
     TF_OK = False
-    print("⚠  TensorFlow no instalado. Instalar con:  pip install tensorflow")
+    print("⚠  PyTorch no instalado. Instalar con:  pip install torch torchvision")
 
 # ── Rutas ─────────────────────────────────────────────────────────────────
 BASE        = os.path.dirname(os.path.abspath(__file__))
-MODELO_PATH = os.path.join(BASE, "model", "mask_detector.keras")
+MODELO_PATH = os.path.join(BASE, "model", "mask_detector.pth")
 HAAR_PATH   = os.path.join(BASE, "model", "haarcascade_frontalface_default.xml")
 HAAR_URL    = "https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_default.xml"
 DRIVE_URL   = "https://drive.google.com/drive/folders/113Ccinp1P4rvN9DfVBkDLyS3rEJBxPJM?usp=drive_link"
@@ -29,6 +28,16 @@ os.makedirs(os.path.join(BASE, "model"), exist_ok=True)
 
 app = Flask(__name__)
 CORS(app)
+
+DEVICE = torch.device("cpu") if TF_OK else None
+
+# Normalización equivalente a MobileNetV2 preprocess_input
+IMG_TRANSFORM = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225]),
+]) if TF_OK else None
 
 # ── Singletons ────────────────────────────────────────────────────────────
 _modelo   = None
@@ -45,17 +54,18 @@ def get_detector():
     return _detector
 
 def build_model():
-    base = MobileNetV2(weights="imagenet", include_top=False, input_shape=(224,224,3))
-    base.trainable = False
-    m = keras.Sequential([
-        base,
-        layers.GlobalAveragePooling2D(),
-        layers.Dense(128, activation="relu"),
-        layers.Dropout(0.3),
-        layers.Dense(2, activation="softmax"),  # 0=con  1=sin
-    ])
-    m.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
-    return m
+    base = tv_models.mobilenet_v2(weights=tv_models.MobileNet_V2_Weights.IMAGENET1K_V1)
+    for param in base.parameters():
+        param.requires_grad = False
+    base.classifier = nn.Sequential(
+        nn.Dropout(0.3),
+        nn.Linear(base.last_channel, 128),
+        nn.ReLU(),
+        nn.Dropout(0.3),
+        nn.Linear(128, 2),
+    )
+    base.to(DEVICE)
+    return base
 
 def get_model():
     global _modelo
@@ -63,28 +73,30 @@ def get_model():
     if not TF_OK: return None
     if os.path.exists(MODELO_PATH):
         print(f"  Cargando modelo: {MODELO_PATH}")
-        _modelo = keras.models.load_model(MODELO_PATH)
+        _modelo = build_model()
+        _modelo.load_state_dict(torch.load(MODELO_PATH, map_location=DEVICE))
+        _modelo.eval()
         print("  ✓ Modelo cargado")
     else:
         print("  ⚠  No se encontró modelo entrenado.")
         print("     Usa el botón 'Descargar dataset y entrenar' en la web.")
         _modelo = build_model()
+        _modelo.eval()
     return _modelo
 
 def prep_roi(img_bgr):
-    det  = get_detector()
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    faces = det.detectMultiScale(gray, 1.1, 5, minSize=(50,50))
+    det   = get_detector()
+    gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+    faces = det.detectMultiScale(gray, 1.1, 5, minSize=(50, 50))
     found = len(faces) > 0
     if found:
-        x,y,w,h = sorted(faces, key=lambda b: b[2]*b[3], reverse=True)[0]
+        x, y, w, h = sorted(faces, key=lambda b: b[2]*b[3], reverse=True)[0]
         roi = img_bgr[y:y+h, x:x+w]
     else:
         roi = img_bgr
-    roi = cv2.resize(roi, (224,224))
-    roi = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-    roi = preprocess_input(roi.astype("float32"))
-    return roi, found
+    roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+    tensor  = IMG_TRANSFORM(Image.fromarray(roi_rgb))
+    return tensor, found
 
 # ── Rutas Flask ────────────────────────────────────────────────────────────
 @app.route("/")
@@ -99,19 +111,22 @@ def model_status():
 def predict():
     if "image" not in request.files:
         return jsonify({"error": "No se recibió imagen"}), 400
-    file = request.files["image"]
+    file  = request.files["image"]
     nparr = np.frombuffer(file.read(), np.uint8)
     img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         return jsonify({"error": "No se pudo leer la imagen"}), 400
     if not TF_OK:
-        return jsonify({"error": "TensorFlow no instalado"}), 500
+        return jsonify({"error": "PyTorch no instalado"}), 500
 
-    modelo = get_model()
-    roi, found = prep_roi(img)
-    probs  = modelo.predict(np.expand_dims(roi, 0), verbose=0)[0]
-    clase  = int(np.argmax(probs))
-    conf   = float(probs[clase]) * 100
+    modelo        = get_model()
+    tensor, found = prep_roi(img)
+    with torch.no_grad():
+        output = modelo(tensor.unsqueeze(0).to(DEVICE))
+        probs  = torch.softmax(output, dim=1)[0].cpu().numpy()
+
+    clase = int(np.argmax(probs))
+    conf  = float(probs[clase]) * 100
 
     return jsonify({
         "label":         "con_mascarilla" if clase == 0 else "sin_mascarilla",
@@ -124,7 +139,7 @@ def predict():
 @app.route("/train", methods=["POST"])
 def train():
     if not TF_OK:
-        return jsonify({"error": "TensorFlow no instalado"}), 500
+        return jsonify({"error": "PyTorch no instalado"}), 500
     files = request.files.getlist("images[]")
     X, y = [], []
     for f in files:
@@ -135,21 +150,43 @@ def train():
         nparr = np.frombuffer(f.read(), np.uint8)
         img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is not None:
-            roi, _ = prep_roi(img)
-            X.append(roi); y.append(lbl)
+            tensor, _ = prep_roi(img)
+            X.append(tensor); y.append(lbl)
     if len(X) < 4:
         return jsonify({"error": "Necesitas al menos 4 imágenes etiquetadas (nombre con 'con' o 'sin')"}), 400
+
     global _modelo
     _modelo = build_model()
-    hist = _modelo.fit(np.array(X), np.array(y), epochs=10, batch_size=4, verbose=0)
-    _modelo.save(MODELO_PATH)
-    acc = hist.history["accuracy"][-1]
-    return jsonify({"message": "ok", "accuracy": round(float(acc)*100, 1), "samples": len(X)})
+    _modelo.train()
+
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, _modelo.parameters()), lr=1e-3
+    )
+    criterion = nn.CrossEntropyLoss()
+    X_t = torch.stack(X).to(DEVICE)
+    y_t = torch.tensor(y, dtype=torch.long).to(DEVICE)
+    dataset = torch.utils.data.TensorDataset(X_t, y_t)
+    loader  = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+
+    for _ in range(10):
+        for xb, yb in loader:
+            optimizer.zero_grad()
+            loss = criterion(_modelo(xb), yb)
+            loss.backward()
+            optimizer.step()
+
+    _modelo.eval()
+    with torch.no_grad():
+        preds = torch.argmax(_modelo(X_t), dim=1)
+        acc   = (preds == y_t).float().mean().item()
+
+    torch.save(_modelo.state_dict(), MODELO_PATH)
+    return jsonify({"message": "ok", "accuracy": round(acc * 100, 1), "samples": len(X)})
 
 @app.route("/train_from_drive", methods=["POST"])
 def train_from_drive():
     if not TF_OK:
-        return jsonify({"error": "TensorFlow no instalado"}), 500
+        return jsonify({"error": "PyTorch no instalado"}), 500
     try:
         import gdown
     except ImportError:
@@ -177,18 +214,39 @@ def train_from_drive():
         else: continue
         img = cv2.imread(ruta)
         if img is not None:
-            roi, _ = prep_roi(img)
-            X.append(roi); y.append(lbl)
+            tensor, _ = prep_roi(img)
+            X.append(tensor); y.append(lbl)
 
     if len(X) < 4:
         return jsonify({"error": "Imágenes sin etiqueta en nombre (necesita 'con' o 'sin')"}), 400
 
     global _modelo
     _modelo = build_model()
-    hist = _modelo.fit(np.array(X), np.array(y), epochs=10, batch_size=4, verbose=1)
-    _modelo.save(MODELO_PATH)
-    acc = hist.history["accuracy"][-1]
-    return jsonify({"message": "ok", "accuracy": round(float(acc)*100, 1), "samples": len(X)})
+    _modelo.train()
+
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, _modelo.parameters()), lr=1e-3
+    )
+    criterion = nn.CrossEntropyLoss()
+    X_t = torch.stack(X).to(DEVICE)
+    y_t = torch.tensor(y, dtype=torch.long).to(DEVICE)
+    dataset = torch.utils.data.TensorDataset(X_t, y_t)
+    loader  = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+
+    for _ in range(10):
+        for xb, yb in loader:
+            optimizer.zero_grad()
+            loss = criterion(_modelo(xb), yb)
+            loss.backward()
+            optimizer.step()
+
+    _modelo.eval()
+    with torch.no_grad():
+        preds = torch.argmax(_modelo(X_t), dim=1)
+        acc   = (preds == y_t).float().mean().item()
+
+    torch.save(_modelo.state_dict(), MODELO_PATH)
+    return jsonify({"message": "ok", "accuracy": round(acc * 100, 1), "samples": len(X)})
 
 # ── arranque ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -201,4 +259,4 @@ if __name__ == "__main__":
         print("     Usa el botón 'Descargar dataset de Drive y entrenar'")
         print("     o sube tus propias imágenes en la sección de entrenamiento")
     print("─"*50 + "\n")
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    app.run(debug=True, host="0.0.0.0", port=port)
