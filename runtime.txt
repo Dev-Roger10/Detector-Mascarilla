@@ -1,7 +1,1 @@
-flask
-flask-cors
-tensorflow
-opencv-python
-pillow
-numpy
-gdown
+python-3.11.9
