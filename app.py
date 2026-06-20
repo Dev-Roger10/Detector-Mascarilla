@@ -1,13 +1,3 @@
-"""
-app.py — Detector de Mascarillas (local)
-=========================================
-Ejecutar:
-    pip install flask flask-cors tensorflow opencv-python pillow numpy gdown
-    python app.py
-
-Luego abrir:  http://localhost:5000
-"""
-
 import os, io, urllib.request, base64
 import numpy as np
 import cv2
@@ -202,9 +192,7 @@ def train_from_drive():
 
 # ── arranque ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("\n" + "─"*50)
-    print("  Detector de Mascarillas")
-    print("  http://localhost:5000")
+    port = int(os.environ.get("PORT", 5000))
     print("─"*50)
     if os.path.exists(MODELO_PATH):
         print("  ✓ Modelo encontrado — listo para detectar")
