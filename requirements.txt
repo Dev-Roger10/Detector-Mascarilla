@@ -1,7 +1,8 @@
 flask
 flask-cors
-tensorflow
-opencv-python
+tensorflow==2.16.1
+opencv-python-headless
 pillow
 numpy
 gdown
+gunicorn
